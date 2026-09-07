@@ -10,7 +10,7 @@ import {
   TextArea,
   TextField,
 } from "@heroui/react";
-import { zipSync } from "fflate";
+import { strToU8, zipSync } from "fflate";
 import {
   Album,
   ArrowDownToLine,
@@ -20,8 +20,11 @@ import {
   CircleHelp,
   Clock3,
   Disc3,
+  File as FileIcon,
   FileAudio,
   FileCheck2,
+  FileJson,
+  FileWarning,
   FolderOpen,
   ImagePlus,
   Info,
@@ -45,11 +48,23 @@ import {
 import { emptyMetadata, readMetadata, safeFilename, TrackMetadata, writeMetadata } from "./lib/id3";
 
 type Mode = "metadata" | "spotify";
+type GeneralMetadata = {
+  title: string;
+  author: string;
+  owner: string;
+  description: string;
+  category: string;
+  tags: string;
+  modifiedAt: string;
+};
 type TrackItem = {
   id: string;
   file: File;
   audioUrl: string;
   filename: string;
+  extension: string;
+  isMp3: boolean;
+  general: GeneralMetadata;
   metadata: TrackMetadata;
   original: TrackMetadata;
   duration: number;
@@ -74,6 +89,34 @@ function initials(value: string) {
   return value.split(/\s+/).filter(Boolean).slice(0, 2).map((word) => word[0]).join("").toUpperCase() || "MP";
 }
 
+function splitFilename(name: string) {
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return { stem: name, extension: "" };
+  return { stem: name.slice(0, dot), extension: name.slice(dot) };
+}
+
+function dateTimeLocal(timestamp: number) {
+  const date = new Date(timestamp);
+  const offset = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+}
+
+function generalManifest(item: TrackItem) {
+  return {
+    schema: "metaform-metadata-v1",
+    filename: `${safeFilename(item.filename)}${item.extension}`,
+    originalFilename: item.file.name,
+    mediaType: item.file.type || "application/octet-stream",
+    size: item.file.size,
+    sourceLastModified: new Date(item.file.lastModified).toISOString(),
+    metadata: {
+      ...item.general,
+      modifiedAt: item.general.modifiedAt ? new Date(item.general.modifiedAt).toISOString() : null,
+      tags: item.general.tags.split(",").map((tag) => tag.trim()).filter(Boolean),
+    },
+  };
+}
+
 function App() {
   const [mode, setMode] = useState<Mode>("metadata");
   const [tracks, setTracks] = useState<TrackItem[]>([]);
@@ -87,19 +130,32 @@ function App() {
   const active = tracks.find((track) => track.id === activeId);
 
   const addFiles = async (files: FileList | File[]) => {
-    const mp3s = Array.from(files).filter((file) => file.type === "audio/mpeg" || file.name.toLowerCase().endsWith(".mp3"));
-    if (!mp3s.length) { setNotice("Choose one or more MP3 files."); return; }
-    const items = await Promise.all(mp3s.map(async (file) => {
-      const metadata = await readMetadata(file).catch(() => ({ ...emptyMetadata(), title: file.name.replace(/\.mp3$/i, "") }));
+    const selected = Array.from(files);
+    const accepted = mode === "spotify" ? selected.filter((file) => file.type === "audio/mpeg" || file.name.toLowerCase().endsWith(".mp3")) : selected;
+    if (!accepted.length) { setNotice(mode === "spotify" ? "Spotify mode accepts MP3 files only." : "Choose one or more files."); return; }
+    const items = await Promise.all(accepted.map(async (file) => {
+      const { stem, extension } = splitFilename(file.name);
+      const isMp3 = file.type === "audio/mpeg" || extension.toLowerCase() === ".mp3";
+      const metadata = isMp3 ? await readMetadata(file).catch(() => ({ ...emptyMetadata(), title: stem })) : { ...emptyMetadata(), title: stem };
       return {
-        id: crypto.randomUUID(), file, filename: file.name.replace(/\.mp3$/i, ""), metadata,
+        id: crypto.randomUUID(), file, filename: stem, extension, isMp3, metadata,
+        general: {
+          title: metadata.title || stem,
+          author: metadata.artist,
+          owner: "",
+          description: metadata.comment,
+          category: metadata.genre,
+          tags: "",
+          modifiedAt: dateTimeLocal(file.lastModified),
+        },
         original: { ...metadata }, audioUrl: URL.createObjectURL(file), duration: 0,
       };
     }));
     setTracks((current) => [...current, ...items]);
     setActiveId((current) => current || items[0].id);
     setMobileLibrary(false);
-    setNotice(`${items.length} ${items.length === 1 ? "track" : "tracks"} added to your session.`);
+    const rejected = selected.length - accepted.length;
+    setNotice(`${items.length} ${items.length === 1 ? "file" : "files"} added${rejected ? `; ${rejected} non-MP3 ${rejected === 1 ? "file was" : "files were"} skipped` : ""}.`);
   };
 
   const updateActive = (patch: Partial<TrackItem>) => {
@@ -109,6 +165,11 @@ function App() {
   const updateMetadata = (key: keyof TrackMetadata, value: string | boolean) => {
     if (!active) return;
     updateActive({ metadata: { ...active.metadata, [key]: value } });
+  };
+
+  const updateGeneral = (key: keyof GeneralMetadata, value: string) => {
+    if (!active) return;
+    updateActive({ general: { ...active.general, [key]: value } });
   };
 
   const removeTrack = (id: string) => {
@@ -122,6 +183,17 @@ function App() {
 
   const exportActive = async () => {
     if (!active) return;
+    if (mode === "metadata") {
+      const exportedName = `${safeFilename(active.filename)}${active.extension}`;
+      const archive = {
+        [exportedName]: new Uint8Array(await active.file.arrayBuffer()),
+        [`${safeFilename(active.filename)}.metadata.json`]: strToU8(JSON.stringify(generalManifest(active), null, 2)),
+      };
+      downloadBlob(new Blob([zipSync(archive, { level: 0 })], { type: "application/zip" }), `${safeFilename(active.filename)}-with-metadata.zip`);
+      setNotice("File and portable metadata exported together.");
+      return;
+    }
+    if (!active.isMp3) { setNotice("Choose an MP3 file for Spotify mode."); return; }
     const blob = await writeMetadata(active.file, active.metadata);
     const spotifyName = [active.metadata.artist, active.metadata.title].filter(Boolean).join(" - ");
     const name = mode === "spotify" && spotifyName ? spotifyName : active.filename;
@@ -130,21 +202,27 @@ function App() {
   };
 
   const exportAll = async () => {
-    if (tracks.length < 2) return;
+    const eligible = mode === "spotify" ? tracks.filter((track) => track.isMp3) : tracks;
+    if (eligible.length < 2) return;
     const archive: Record<string, Uint8Array> = {};
-    for (let index = 0; index < tracks.length; index++) {
-      const track = tracks[index];
-      const tagged = await writeMetadata(track.file, track.metadata);
+    for (let index = 0; index < eligible.length; index++) {
+      const track = eligible[index];
       const spotifyName = [track.metadata.artist, track.metadata.title].filter(Boolean).join(" - ");
       const baseName = safeFilename(mode === "spotify" && spotifyName ? spotifyName : track.filename);
-      let filename = `${baseName}.mp3`;
+      let filename = `${baseName}${mode === "spotify" ? ".mp3" : track.extension}`;
       let copy = 2;
-      while (archive[filename]) filename = `${baseName} (${copy++}).mp3`;
-      archive[filename] = new Uint8Array(await tagged.arrayBuffer());
+      while (archive[filename]) filename = `${baseName} (${copy++})${mode === "spotify" ? ".mp3" : track.extension}`;
+      if (mode === "spotify") {
+        const tagged = await writeMetadata(track.file, track.metadata);
+        archive[filename] = new Uint8Array(await tagged.arrayBuffer());
+      } else {
+        archive[filename] = new Uint8Array(await track.file.arrayBuffer());
+        archive[`${filename}.metadata.json`] = strToU8(JSON.stringify(generalManifest(track), null, 2));
+      }
     }
     const zipped = zipSync(archive, { level: 0 });
-    downloadBlob(new Blob([zipped], { type: "application/zip" }), `metaform-${mode === "spotify" ? "spotify-ready" : "tagged"}-${tracks.length}-tracks.zip`);
-    setNotice(`${tracks.length} tagged tracks exported in one ZIP.`);
+    downloadBlob(new Blob([zipped], { type: "application/zip" }), `metaform-${mode === "spotify" ? "spotify-ready" : "metadata"}-${eligible.length}-files.zip`);
+    setNotice(`${eligible.length} ${mode === "spotify" ? "tagged tracks" : "files with metadata"} exported in one ZIP.`);
   };
 
   const replaceCover = async (file?: File) => {
@@ -160,10 +238,20 @@ function App() {
     return () => clearTimeout(timer);
   }, [notice]);
 
+  const changeMode = (nextMode: Mode) => {
+    setMode(nextMode);
+    if (nextMode === "spotify" && active && !active.isMp3) {
+      const firstMp3 = tracks.find((track) => track.isMp3);
+      if (firstMp3) setActiveId(firstMp3.id);
+    }
+  };
+
+  const eligibleCount = mode === "spotify" ? tracks.filter((track) => track.isMp3).length : tracks.length;
+
   return (
     <div className="app-shell">
-      <input ref={singleFileInput} className="hidden" type="file" accept="audio/mpeg,.mp3" onChange={(e) => e.target.files && addFiles(e.target.files)} />
-      <input ref={multiFileInput} className="hidden" type="file" accept="audio/mpeg,.mp3" multiple onChange={(e) => e.target.files && addFiles(e.target.files)} />
+      <input ref={singleFileInput} className="hidden" type="file" accept={mode === "spotify" ? "audio/mpeg,.mp3" : undefined} onChange={(e) => e.target.files && addFiles(e.target.files)} />
+      <input ref={multiFileInput} className="hidden" type="file" accept={mode === "spotify" ? "audio/mpeg,.mp3" : undefined} multiple onChange={(e) => e.target.files && addFiles(e.target.files)} />
       <input ref={coverInput} className="hidden" type="file" accept="image/jpeg,image/png,image/webp" onChange={(e) => replaceCover(e.target.files?.[0])} />
 
       <header className="topbar">
@@ -173,10 +261,10 @@ function App() {
         </button>
 
         <div className="mode-switch" aria-label="Editor mode">
-          <button className={mode === "metadata" ? "active" : ""} onClick={() => setMode("metadata")}>
-            <Tag size={15} /> Metadata
+          <button className={mode === "metadata" ? "active" : ""} onClick={() => changeMode("metadata")}>
+            <Tag size={15} /> File metadata
           </button>
-          <button className={mode === "spotify" ? "active spotify" : ""} onClick={() => setMode("spotify")}>
+          <button className={mode === "spotify" ? "active spotify" : ""} onClick={() => changeMode("spotify")}>
             <SpotifyGlyph /> Spotify local
           </button>
         </div>
@@ -195,21 +283,21 @@ function App() {
           <aside className={`library-panel ${mobileLibrary ? "mobile-open" : ""}`}>
             <div className="library-heading">
               <div><span>Session</span><strong>{tracks.length} {tracks.length === 1 ? "file" : "files"}</strong></div>
-              <Button isIconOnly aria-label="Add MP3 files" size="sm" variant="ghost" onPress={() => multiFileInput.current?.click()}><Plus size={16} /></Button>
+              <Button isIconOnly aria-label="Add files" size="sm" variant="ghost" onPress={() => multiFileInput.current?.click()}><Plus size={16} /></Button>
             </div>
             <div className="track-list">
               {tracks.map((track) => (
                 <button key={track.id} className={`track-row ${track.id === activeId ? "active" : ""}`} onClick={() => { setActiveId(track.id); setMobileLibrary(false); }}>
-                  <CoverMini track={track} />
+                  <CoverMini track={track} mode={mode} />
                   <span className="track-copy">
-                    <strong>{track.metadata.title || track.filename}</strong>
-                    <small>{track.metadata.artist || "Unknown artist"}</small>
+                    <strong>{mode === "spotify" ? track.metadata.title || track.filename : track.general.title || track.filename}</strong>
+                    <small>{mode === "spotify" ? track.metadata.artist || (track.isMp3 ? "Unknown artist" : "Not an MP3") : track.extension.slice(1).toUpperCase() || track.file.type || "File"}</small>
                   </span>
                   <span className="row-more" onClick={(e) => { e.stopPropagation(); removeTrack(track.id); }} title="Remove from session"><X size={14} /></span>
                 </button>
               ))}
             </div>
-            <button className="add-row" onClick={() => multiFileInput.current?.click()}><Plus size={15} /> Add more MP3s</button>
+            <button className="add-row" onClick={() => multiFileInput.current?.click()}><Plus size={15} /> Add more {mode === "spotify" ? "MP3s" : "files"}</button>
             <div className="local-note"><LockKeyhole size={14} /><span><strong>Local session</strong>Your files stay on this device.</span></div>
           </aside>
 
@@ -217,15 +305,17 @@ function App() {
             <div className="editor-topline">
               <button className="mobile-library-button" onClick={() => setMobileLibrary(!mobileLibrary)}><Library size={16} /> {tracks.length} files</button>
               <div>
-                <p className="eyebrow">{mode === "metadata" ? "Metadata editor" : "Spotify local files"}</p>
-                <h1>{mode === "metadata" ? "Fine-tune every detail." : "Make it Spotify-ready."}</h1>
-                <p>{mode === "metadata" ? "Edit the embedded ID3 tags and file identity with precision." : "Polish the information Spotify reads when you import a local track."}</p>
+                <p className="eyebrow">{mode === "metadata" ? "Universal metadata" : "Spotify local files"}</p>
+                <h1>{mode === "metadata" ? "Organize any file." : "Make it Spotify-ready."}</h1>
+                <p>{mode === "metadata" ? "Organize identity, ownership, dates and descriptive metadata for any file." : "Polish the information Spotify reads when you import a local track."}</p>
               </div>
               <div className="saved-state"><Check size={13} /> Session saved</div>
             </div>
 
             {mode === "metadata" ? (
-              <MetadataEditor track={active} updateTrack={updateActive} updateMetadata={updateMetadata} onCover={() => coverInput.current?.click()} />
+              <MetadataEditor track={active} updateTrack={updateActive} updateGeneral={updateGeneral} />
+            ) : !active.isMp3 ? (
+              <SpotifyUnsupported onChoose={() => singleFileInput.current?.click()} />
             ) : (
               <SpotifyEditor track={active} updateMetadata={updateMetadata} onCover={() => coverInput.current?.click()} />
             )}
@@ -233,11 +323,11 @@ function App() {
 
           <aside className="preview-panel">
             <TrackPreview track={active} mode={mode} updateTrack={updateActive} />
-            {mode === "spotify" ? <SpotifyChecklist track={active} /> : <FileSummary track={active} />}
-            <Button className="export-button" variant="primary" onPress={exportActive}>
-              <ArrowDownToLine size={17} /> Export {mode === "spotify" ? "Spotify-ready" : "tagged"} MP3
+            {mode === "spotify" ? (active.isMp3 ? <SpotifyChecklist track={active} /> : <CompatibilityNote />) : <FileSummary track={active} />}
+            <Button className="export-button" variant="primary" isDisabled={mode === "spotify" && !active.isMp3} onPress={exportActive}>
+              <ArrowDownToLine size={17} /> {mode === "spotify" ? "Export Spotify-ready MP3" : "Export file + metadata"}
             </Button>
-            {tracks.length > 1 && <Button className="export-all-button" variant="secondary" onPress={exportAll}><Library size={16} /> Export all {tracks.length} as ZIP</Button>}
+            {eligibleCount > 1 && <Button className="export-all-button" variant="secondary" onPress={exportAll}><Library size={16} /> Export all {eligibleCount} as ZIP</Button>}
             <p className="export-note"><ShieldCheck size={12} /> Nothing is uploaded. Export happens locally.</p>
           </aside>
         </main>
@@ -256,9 +346,9 @@ function EmptyState({ mode, dragging, setDragging, onFiles, onBrowseSingle, onBr
         <Chip color={mode === "spotify" ? "success" : "accent"} variant="soft" size="sm">
           <Sparkles size={13} /> {mode === "spotify" ? "Built for Spotify Local Files" : "Private by design"}
         </Chip>
-        <h1>{mode === "spotify" ? <>Your music.<br /><em>Spotify, polished.</em></> : <>Audio metadata,<br /><em>beautifully done.</em></>}</h1>
-        <p>{mode === "spotify" ? "Prepare clean titles, artist credits, albums and artwork before adding your tracks to Spotify." : "A considered workspace for editing MP3 details, artwork, and file identity—without uploading a byte."}</p>
-        <div className="trust-row"><span><Check size={14} /> No account</span><span><Check size={14} /> Browser-only</span><span><Check size={14} /> Lossless audio</span></div>
+        <h1>{mode === "spotify" ? <>Your music.<br /><em>Spotify, polished.</em></> : <>File metadata,<br /><em>beautifully organized.</em></>}</h1>
+        <p>{mode === "spotify" ? "Prepare clean titles, artist credits, albums and artwork before adding your tracks to Spotify." : "Rename and document any local file with clean ownership, dates, descriptions, categories and portable metadata."}</p>
+        <div className="trust-row"><span><Check size={14} /> No account</span><span><Check size={14} /> Browser-only</span><span><Check size={14} /> Original bytes preserved</span></div>
       </section>
 
       <section
@@ -268,23 +358,23 @@ function EmptyState({ mode, dragging, setDragging, onFiles, onBrowseSingle, onBr
         onDrop={(e) => { e.preventDefault(); setDragging(false); onFiles(e.dataTransfer.files); }}
       >
         <div className="drop-visual">
-          <div className="file-sheet back"><Music2 size={20} /></div>
-          <div className="file-sheet front"><FileAudio size={28} /><span>MP3</span></div>
+          <div className="file-sheet back">{mode === "spotify" ? <Music2 size={20} /> : <FileJson size={20} />}</div>
+          <div className="file-sheet front">{mode === "spotify" ? <FileAudio size={28} /> : <FileIcon size={28} />}<span>{mode === "spotify" ? "MP3" : "FILE"}</span></div>
           <div className="upload-orb"><UploadCloud size={20} /></div>
         </div>
-        <h2>Drop your music here</h2>
-        <p>One track or an entire selection</p>
+        <h2>Drop your {mode === "spotify" ? "music" : "files"} here</h2>
+        <p>One file or an entire selection</p>
         <div className="file-choice-actions">
-          <Button variant="primary" size="lg" onPress={onBrowseSingle}><FolderOpen size={18} /> Choose one MP3</Button>
+          <Button variant="primary" size="lg" onPress={onBrowseSingle}><FolderOpen size={18} /> Choose one {mode === "spotify" ? "MP3" : "file"}</Button>
           <Button variant="secondary" size="lg" onPress={onBrowseMultiple}><Library size={17} /> Select multiple</Button>
         </div>
-        <small>MP3 only · files are processed on your device</small>
+        <small>{mode === "spotify" ? "MP3 only" : "Any file type"} · files are processed on your device</small>
       </section>
 
       <section className="feature-strip">
-        <article><span><WandSparkles size={18} /></span><div><strong>Clean metadata</strong><p>Titles, artists, albums, genres and more.</p></div></article>
-        <article><span><ImagePlus size={18} /></span><div><strong>Artwork included</strong><p>Embed high-quality cover art directly.</p></div></article>
-        <article><span><ShieldCheck size={18} /></span><div><strong>Completely private</strong><p>Your audio never leaves this browser.</p></div></article>
+        <article><span><WandSparkles size={18} /></span><div><strong>{mode === "spotify" ? "Clean music tags" : "Universal organization"}</strong><p>{mode === "spotify" ? "Titles, artists, albums, genres and more." : "Names, owners, dates, descriptions and tags."}</p></div></article>
+        <article><span>{mode === "spotify" ? <ImagePlus size={18} /> : <FileJson size={18} />}</span><div><strong>{mode === "spotify" ? "Artwork included" : "Portable sidecars"}</strong><p>{mode === "spotify" ? "Embed high-quality cover art directly." : "Keep metadata readable without altering file data."}</p></div></article>
+        <article><span><ShieldCheck size={18} /></span><div><strong>Completely private</strong><p>Your files never leave this browser.</p></div></article>
       </section>
       <footer className="empty-footer">
         <span>Metaform Studio</span>
@@ -295,38 +385,47 @@ function EmptyState({ mode, dragging, setDragging, onFiles, onBrowseSingle, onBr
   );
 }
 
-function MetadataEditor({ track, updateTrack, updateMetadata, onCover }: { track: TrackItem; updateTrack: (patch: Partial<TrackItem>) => void; updateMetadata: (key: keyof TrackMetadata, value: string | boolean) => void; onCover: () => void }) {
+function MetadataEditor({ track, updateTrack, updateGeneral }: { track: TrackItem; updateTrack: (patch: Partial<TrackItem>) => void; updateGeneral: (key: keyof GeneralMetadata, value: string) => void }) {
   return (
     <div className="editor-stack">
-      <EditorCard icon={<FileAudio size={17} />} title="File identity" description="The exported filename and original file properties.">
+      <Card variant="secondary" className="universal-intro">
+        <Card.Content><FileJson size={18} /><div><strong>Universal metadata workspace</strong><p>The original file data stays intact. Your edits are packaged in a readable JSON sidecar that travels with the renamed file.</p></div><Chip color="accent" variant="soft" size="sm">Any format</Chip></Card.Content>
+      </Card>
+
+      <EditorCard icon={<FileIcon size={17} />} title="File identity" description="Rename the exported file and review its source properties.">
         <div className="field-grid">
-          <Field label="Exported filename" value={track.filename} onChange={(value) => updateTrack({ filename: value })} suffix=".mp3" />
-          <ReadonlyField label="Last modified" value={new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(track.file.lastModified)} icon={<Clock3 size={14} />} />
+          <Field label="Exported filename" value={track.filename} onChange={(value) => updateTrack({ filename: value })} suffix={track.extension} />
+          <ReadonlyField label="Original filename" value={track.file.name} />
+          <ReadonlyField label="Source last modified" value={new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(track.file.lastModified)} icon={<Clock3 size={14} />} />
           <ReadonlyField label="File size" value={formatBytes(track.file.size)} />
-          <ReadonlyField label="Format" value="MPEG Audio Layer III" />
+          <ReadonlyField label="Media type" value={track.file.type || "Unknown / binary"} />
+          <ReadonlyField label="Extension" value={track.extension || "No extension"} />
         </div>
       </EditorCard>
 
-      <EditorCard icon={<Tag size={17} />} title="Core metadata" description="The information players and music libraries display.">
+      <EditorCard icon={<Tag size={17} />} title="Descriptive metadata" description="Portable details for organizing, cataloging and identifying this file.">
         <div className="field-grid">
-          <Field label="Title" value={track.metadata.title} onChange={(value) => updateMetadata("title", value)} placeholder="Track title" />
-          <Field label="Artist" value={track.metadata.artist} onChange={(value) => updateMetadata("artist", value)} placeholder="Primary artist" />
-          <Field label="Album" value={track.metadata.album} onChange={(value) => updateMetadata("album", value)} placeholder="Album or release" />
-          <Field label="Album artist" value={track.metadata.albumArtist} onChange={(value) => updateMetadata("albumArtist", value)} placeholder="Album artist" />
-          <GenreField value={track.metadata.genre} onChange={(value) => updateMetadata("genre", value)} />
-          <Field label="Release year" value={track.metadata.year} onChange={(value) => updateMetadata("year", value.replace(/\D/g, "").slice(0, 4))} placeholder="2026" />
-          <Field label="Track number" value={track.metadata.track} onChange={(value) => updateMetadata("track", value)} placeholder="1 or 1/12" />
-          <Field label="Disc number" value={track.metadata.disc} onChange={(value) => updateMetadata("disc", value)} placeholder="1 or 1/2" />
-          <Field label="Composer" value={track.metadata.composer} onChange={(value) => updateMetadata("composer", value)} placeholder="Optional" wide />
-          <TextField className="field wide" name="comment">
-            <Label>Comment</Label>
-            <TextArea variant="secondary" rows={3} value={track.metadata.comment} onChange={(e) => updateMetadata("comment", e.target.value)} placeholder="Add a private note or credit…" />
+          <Field label="Display title" value={track.general.title} onChange={(value) => updateGeneral("title", value)} placeholder="Human-readable title" />
+          <Field label="Author / creator" value={track.general.author} onChange={(value) => updateGeneral("author", value)} placeholder="Person or organization" />
+          <Field label="Owner / rights holder" value={track.general.owner} onChange={(value) => updateGeneral("owner", value)} placeholder="Optional" />
+          <Field label="Category" value={track.general.category} onChange={(value) => updateGeneral("category", value)} placeholder="Document, design, archive…" />
+          <Field label="Documented modified date" type="datetime-local" value={track.general.modifiedAt} onChange={(value) => updateGeneral("modifiedAt", value)} />
+          <Field label="Tags" value={track.general.tags} onChange={(value) => updateGeneral("tags", value)} placeholder="project, final, client" />
+          <TextField className="field wide" name="description">
+            <Label>Description / notes</Label>
+            <TextArea variant="secondary" rows={4} value={track.general.description} onChange={(e) => updateGeneral("description", e.target.value)} placeholder="Describe the file, its purpose, source or usage rights…" />
           </TextField>
         </div>
       </EditorCard>
-
-      <ArtworkCard track={track} onCover={onCover} onRemove={() => updateMetadata("cover", undefined as never)} />
     </div>
+  );
+}
+
+function SpotifyUnsupported({ onChoose }: { onChoose: () => void }) {
+  return (
+    <Card className="unsupported-card" variant="default">
+      <Card.Content><span><FileWarning size={26} /></span><h2>Spotify mode needs an MP3</h2><p>This file remains available in Metadata mode. Choose an MP3 to edit embedded Spotify-facing tags and cover artwork.</p><Button variant="primary" onPress={onChoose}><FileAudio size={16} /> Choose an MP3</Button></Card.Content>
+    </Card>
   );
 }
 
@@ -375,11 +474,11 @@ function EditorCard({ icon, title, description, children }: { icon: React.ReactN
   );
 }
 
-function Field({ label, value, onChange, placeholder, suffix, wide, required }: { label: string; value: string; onChange: (value: string) => void; placeholder?: string; suffix?: string; wide?: boolean; required?: boolean }) {
+function Field({ label, value, onChange, placeholder, suffix, wide, required, type = "text" }: { label: string; value: string; onChange: (value: string) => void; placeholder?: string; suffix?: string; wide?: boolean; required?: boolean; type?: string }) {
   return (
     <TextField className={`field ${wide ? "wide" : ""}`} name={label.toLowerCase().replace(/\s+/g, "-")} isRequired={required}>
       <Label>{label}</Label>
-      <div className="input-wrap"><Input variant="secondary" value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} />{suffix && <span>{suffix}</span>}</div>
+      <div className="input-wrap"><Input variant="secondary" type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} />{suffix && <span>{suffix}</span>}</div>
     </TextField>
   );
 }
@@ -437,6 +536,21 @@ function TrackPreview({ track, mode, updateTrack }: { track: TrackItem; mode: Mo
     if (playing) el.pause(); else await el.play();
     setPlaying(!playing);
   };
+  if (mode === "metadata" || !track.isMp3) {
+    const isImage = track.file.type.startsWith("image/");
+    return (
+      <Card className="preview-card file-preview" variant="tertiary">
+        <Card.Header><div><Card.Title>File preview</Card.Title><Card.Description>{mode === "metadata" ? "Universal metadata package" : "Not compatible with Spotify mode"}</Card.Description></div><MoreHorizontal size={18} /></Card.Header>
+        <Card.Content>
+          <div className={`generic-file-visual ${isImage ? "is-image" : ""}`}>
+            {isImage ? <img src={track.audioUrl} alt="File preview" /> : <><FileIcon size={76} /><span>{track.extension.slice(1).toUpperCase() || "FILE"}</span></>}
+          </div>
+          <div className="preview-title"><strong>{track.general.title || track.filename}</strong><span>{track.general.author || track.general.owner || "No creator specified"}</span><small>{track.filename}{track.extension}</small></div>
+          <div className="metadata-package-row">{mode === "metadata" ? <FileJson size={15} /> : <FileWarning size={15} />}<div><strong>{mode === "metadata" ? "Sidecar ready" : "MP3 required"}</strong><span>{mode === "metadata" ? "Portable JSON metadata" : "Use File metadata for this item"}</span></div>{mode === "metadata" && <Check size={14} />}</div>
+        </Card.Content>
+      </Card>
+    );
+  }
   return (
     <Card className={`preview-card ${mode === "spotify" ? "spotify-preview" : ""}`} variant="tertiary">
       <Card.Header><div><Card.Title>{mode === "spotify" ? "Spotify preview" : "Now editing"}</Card.Title><Card.Description>{mode === "spotify" ? "Approximate library appearance" : "Listen before you export"}</Card.Description></div><MoreHorizontal size={18} /></Card.Header>
@@ -460,16 +574,23 @@ function TrackPreview({ track, mode, updateTrack }: { track: TrackItem; mode: Mo
 }
 
 function FileSummary({ track }: { track: TrackItem }) {
-  const bitrate = track.duration ? Math.round((track.file.size * 8) / track.duration / 1000) : 0;
   return (
     <Card className="summary-card" variant="default">
       <Card.Header><Card.Title>File overview</Card.Title></Card.Header>
       <Card.Content>
         <SummaryRow label="Size" value={formatBytes(track.file.size)} />
-        <SummaryRow label="Duration" value={formatTime(track.duration)} />
-        <SummaryRow label="Bitrate" value={bitrate ? `~${bitrate} kbps` : "Reading…"} />
-        <SummaryRow label="ID3 output" value="v2.3" />
+        <SummaryRow label="Type" value={track.file.type || "Unknown"} />
+        <SummaryRow label="Extension" value={track.extension || "None"} />
+        <SummaryRow label="Metadata output" value="JSON sidecar" />
       </Card.Content>
+    </Card>
+  );
+}
+
+function CompatibilityNote() {
+  return (
+    <Card className="summary-card compatibility-note" variant="default">
+      <Card.Content><Info size={15} /><p>Only MP3 files can be prepared in Spotify mode. Switch back to Metadata to keep working with this file.</p></Card.Content>
     </Card>
   );
 }
@@ -492,7 +613,10 @@ function SpotifyChecklist({ track }: { track: TrackItem }) {
 }
 
 function SummaryRow({ label, value }: { label: string; value: string }) { return <div className="summary-row"><span>{label}</span><strong>{value}</strong></div>; }
-function CoverMini({ track }: { track: TrackItem }) { return track.metadata.cover ? <img className="cover-mini" src={track.metadata.cover.url} alt="" /> : <span className="cover-mini empty"><Music2 size={15} /></span>; }
+function CoverMini({ track, mode }: { track: TrackItem; mode: Mode }) {
+  if (mode === "spotify" && track.metadata.cover) return <img className="cover-mini" src={track.metadata.cover.url} alt="" />;
+  return <span className="cover-mini empty">{mode === "spotify" && track.isMp3 ? <Music2 size={15} /> : <FileIcon size={15} />}<small>{mode === "metadata" ? track.extension.slice(1, 5).toUpperCase() : ""}</small></span>;
+}
 function HelpTooltip() {
   return (
     <span className="help-tooltip">

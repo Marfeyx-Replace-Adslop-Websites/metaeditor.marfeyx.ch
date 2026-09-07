@@ -1,6 +1,6 @@
 # Metaform
 
-A private, browser-based MP3 metadata editor with a dedicated Spotify Local Files preparation workflow.
+A private, browser-based file metadata organizer with a dedicated MP3/Spotify Local Files preparation workflow.
 
 ## Run locally
 
@@ -21,4 +21,4 @@ The included `.github/workflows/deploy-pages.yml` workflow builds and deploys th
 
 In the GitHub repository, open **Settings → Pages** and set **Build and deployment → Source** to **GitHub Actions**. Do not select the repository root as the publishing source because Vite source files require a build step.
 
-Metaform reads and writes ID3v2.3 tags entirely in the browser. No file is uploaded to a server. Spotify mode exports a tagged MP3 that can be added through Spotify desktop's **Settings → Library → Local Files** workflow.
+File Metadata mode accepts any file type and exports the untouched file together with a portable JSON metadata sidecar. Spotify mode reads and writes ID3v2.3 tags directly inside MP3 files. All processing happens in the browser and nothing is uploaded to a server.
