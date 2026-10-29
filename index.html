@@ -3,29 +3,16 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#080a0b" />
+    <meta name="theme-color" content="#0b0d12" />
     <meta name="description" content="A private, browser-based MP3 metadata editor and Spotify local files preparer." />
-    <title>Metaform — Audio metadata, beautifully done.</title>
-    <style>
-      .boot-screen{min-height:100vh;display:grid;place-items:center;background:#080a0b;color:#f4f6f5;font:14px/1.5 Inter,"Segoe UI",sans-serif}.boot-card{text-align:center}.boot-mark{width:42px;height:42px;margin:0 auto 16px;border-radius:12px;display:grid;place-items:center;background:#a6ffd6;color:#07110b;font-weight:800}.boot-card p{margin:5px 0;color:#75807b;font-size:12px}.boot-card small{color:#4c5651}
-    </style>
+    <title>Metadata Editor — Marfeyx</title>
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+      <link rel="stylesheet" href="./startup.css" />
   </head>
   <body>
-    <div id="root">
-      <div class="boot-screen">
-        <div class="boot-card"><div class="boot-mark">M</div><strong>Loading Metaform…</strong><p>The audio workspace is starting.</p><small id="boot-status"></small></div>
-      </div>
-    </div>
-    <script>
-      window.addEventListener("error", function () {
-        var status = document.getElementById("boot-status");
-        if (status) status.textContent = "Start this project with npm run dev, or serve the built dist folder.";
-      });
-      setTimeout(function () {
-        var status = document.getElementById("boot-status");
-        if (status) status.textContent = "Still loading? Run npm run dev instead of opening index.html directly.";
-      }, 4000);
-    </script>
+    <div id="root"><main class="mfx-boot" data-mfx-boot role="status"><img src="./brand/marfeyx.svg" alt="" width="64" height="64"><h1>Opening Marfeyx Metadata Editor…</h1><p>The tool is loading.</p><a href="./">Reload page</a></main></div>
+    <noscript><div class="mfx-noscript">Enable JavaScript to use Marfeyx Metadata Editor.</div></noscript>
+    <script src="./startup.js"></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

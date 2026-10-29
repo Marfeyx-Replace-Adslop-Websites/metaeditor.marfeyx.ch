@@ -1,3 +1,4 @@
+import { MarfeyxBrand } from "./brand/MarfeyxBrand";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Button,
@@ -221,7 +222,7 @@ function App() {
       }
     }
     const zipped = zipSync(archive, { level: 0 });
-    downloadBlob(new Blob([zipped], { type: "application/zip" }), `metaform-${mode === "spotify" ? "spotify-ready" : "metadata"}-${eligible.length}-files.zip`);
+    downloadBlob(new Blob([zipped], { type: "application/zip" }), `marfeyx-${mode === "spotify" ? "spotify-ready" : "metadata"}-${eligible.length}-files.zip`);
     setNotice(`${eligible.length} ${mode === "spotify" ? "tagged tracks" : "files with metadata"} exported in one ZIP.`);
   };
 
@@ -255,10 +256,7 @@ function App() {
       <input ref={coverInput} className="hidden" type="file" accept="image/jpeg,image/png,image/webp" onChange={(e) => replaceCover(e.target.files?.[0])} />
 
       <header className="topbar">
-        <button className="brand" aria-label="Metaform home" onClick={() => setActiveId("")}>
-          <span className="brand-mark"><AudioLines size={18} strokeWidth={2.4} /></span>
-          <span>metaform</span>
-        </button>
+        <MarfeyxBrand product="Metadata Editor" />
 
         <div className="mode-switch" aria-label="Editor mode">
           <button className={mode === "metadata" ? "active" : ""} onClick={() => changeMode("metadata")}>
@@ -377,7 +375,7 @@ function EmptyState({ mode, dragging, setDragging, onFiles, onBrowseSingle, onBr
         <article><span><ShieldCheck size={18} /></span><div><strong>Completely private</strong><p>Your files never leave this browser.</p></div></article>
       </section>
       <footer className="empty-footer">
-        <span>Metaform Studio</span>
+        <span>Marfeyx Metadata Editor Studio</span>
         <a href="mailto:dev@marfeyx.ch">dev@marfeyx.ch</a>
         <span>Designed for independent sound.</span>
       </footer>
