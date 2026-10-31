@@ -344,7 +344,7 @@ function EmptyState({ mode, dragging, setDragging, onFiles, onBrowseSingle, onBr
         <Chip color={mode === "spotify" ? "success" : "accent"} variant="soft" size="sm">
           <Sparkles size={13} /> {mode === "spotify" ? "Built for Spotify Local Files" : "Private by design"}
         </Chip>
-        <h1>{mode === "spotify" ? <>Your music.<br /><em>Spotify, polished.</em></> : <>File metadata,<br /><em>beautifully organized.</em></>}</h1>
+        <h1>{mode === "spotify" ? <>Your library.<br /><em>Well credited.</em></> : <>Every file.<br /><em>A little more context.</em></>}</h1>
         <p>{mode === "spotify" ? "Prepare clean titles, artist credits, albums and artwork before adding your tracks to Spotify." : "Rename and document any local file with clean ownership, dates, descriptions, categories and portable metadata."}</p>
         <div className="trust-row"><span><Check size={14} /> No account</span><span><Check size={14} /> Browser-only</span><span><Check size={14} /> Original bytes preserved</span></div>
       </section>
@@ -377,7 +377,7 @@ function EmptyState({ mode, dragging, setDragging, onFiles, onBrowseSingle, onBr
       <footer className="empty-footer">
         <span>Marfeyx Metadata Editor Studio</span>
         <a href="mailto:dev@marfeyx.ch">dev@marfeyx.ch</a>
-        <span>Designed for independent sound.</span>
+        <span>A Marfeyx workspace.</span>
       </footer>
     </main>
   );
